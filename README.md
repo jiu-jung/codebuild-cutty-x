@@ -5,6 +5,8 @@
 
 ## 📜 개요
 
+![flow diagram](./diagram.png)
+
 이 리포지토리는 cutty-x FaaS 플랫폼의 **빌드 엔진 역할을 하는 AWS CodeBuild 구성 요소**입니다. 
 <br>
 사용자가 작성한 코드를 S3에서 가져와 Cloud Native Buildpacks를 통해 컨테이너 이미지로 변환하고, 이를 ECR에 배포한 후 결과(성공/실패)를 시스템에 전파하는 전체 파이프라인을 정의합니다.
