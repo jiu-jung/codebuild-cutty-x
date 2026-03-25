@@ -1,227 +1,208 @@
 # CodeBuild Repo README
 
-<details open>
-<summary>🇰🇷 한국어</summary>
+## 개요
 
-## 📜 개요
+이 리포지토리는 **cutty-x FaaS 플랫폼의 빌드 엔진**으로, <br>
+사용자 코드를 **S3**에서 가져와 **Cloud Native Buildpacks로 컨테이너 이미지화**하고, <br>
+이를 **Amazon ECR에 푸시한 뒤 빌드 결과를 시스템에 전파**하는 전체 파이프라인을 담당합니다. <br> <br>
 
-![flow diagram](./diagram.png)
+단순히 이미지를 빌드하는 수준이 아니라, 다양한 사용자 코드가 들어오는 환경에서도 <br>
+**일관된 방식으로 빌드·배포·후속 처리까지 연결되는 표준 파이프라인**이 되도록 설계했습니다. <br> <br>
 
-이 리포지토리는 cutty-x FaaS 플랫폼의 **빌드 엔진 역할을 하는 AWS CodeBuild 구성 요소**입니다. 
+특히 이 저장소에서는 다음과 같은 방향에 집중했습니다.
+- **빌드 단계를 pre/build/post로 분리**해 책임을 명확히 구조화
+- 사용자 코드 차이를 흡수하기 위해 **의존성 및 실행 진입점 자동 보정**
+- 빌드 성공/실패 결과를 외부 시스템으로 즉시 전달해 **운영 대응 가능성 확보**
+- 캐시와 모듈화를 통해 **재사용성과 유지보수성 개선**
+
 <br>
-사용자가 작성한 코드를 S3에서 가져와 Cloud Native Buildpacks를 통해 컨테이너 이미지로 변환하고, 이를 ECR에 배포한 후 결과(성공/실패)를 시스템에 전파하는 전체 파이프라인을 정의합니다.
-<br>
-유지보수성과 확장성을 위해 스크립트가 단계별로 모듈화되어 있습니다.
+
+<p align="center">
+    <img src=./diagram.png width="1000px"/>
+</p>
+
 
 <br>
 
 ---
 
+<br>
 
-## 📂 디렉터리 구조
-빌드 스크립트는 실행 단계와 목적에 따라 체계적으로 분리되어 있습니다.
-```
+## 설계 포인트
+#### 1. 빌드 로직을 단계별로 모듈화
+
+복잡한 빌드 과정을 하나의 스크립트에 몰아넣지 않고, <br>
+**사전 준비 → 이미지 빌드 → 결과 전파** 의 흐름으로 나누어 관리했습니다. <br>
+
+이를 통해:
+- 실패 지점을 빠르게 식별할 수 있고
+- 단계별 수정 범위가 명확해지며
+- 새로운 빌드 요구사항이 생겨도 특정 단계만 확장할 수 있습니다
+
+<br>
+
+#### 2. 사용자 코드 차이를 표준 빌드 흐름 안으로 흡수
+
+FaaS 환경에서는 사용자가 제출하는 코드마다 실행 방식과 환경 구성이 다를 수 있습니다. <br>
+이 차이를 수동 대응하지 않도록, 빌드 전에 다음 작업을 자동화했습니다.
+- `package.json` 보정
+- 함수 실행용 의존성 주입
+- `.env` 파일 생성
+- 런타임 진입점 래핑
+
+즉, 사용자는 함수 코드만 제출하더라도, <br>
+플랫폼은 이를 **실행 가능한 컨테이너 형태로 일관되게 변환**할 수 있습니다.
+
+<br>
+
+#### 3. 빌드 결과를 후속 시스템과 연결
+
+빌드 성공 시 이미지를 푸시하는 데서 끝내지 않고,
+**SQS 메시지 발행을 통해 다음 배포 단계가 이어지도록 구성**했습니다.
+
+또한 실패 시에도 즉시 상태를 전파하도록 해,
+단순 빌드 자동화가 아니라 **운영 가능한 파이프라인**이 되도록 만들었습니다.
+
+<br>
+
+---
+
+<br>
+
+## 디렉터리 구조
+
+빌드 스크립트는 실행 단계와 책임에 따라 분리되어 있습니다.
+```bash
 .
-├── buildspec.yml                   # AWS CodeBuild 빌드 명세서
+├── buildspec.yml                    # AWS CodeBuild 빌드 명세
 └── scripts
     ├── 01_prebuild/
-    │   ├── install_pack.sh         # pack CLI 설치
-    │   ├── resolve_env.sh          # 빌드 환경 변수 검증 및 설정
-    │   ├── s3_sync_and_validate.sh # S3 소스 코드 다운로드 및 검증
-    │   ├── patch_package_json.sh   # package.json 의존성/스크립트 주입
-    │   └── process_env_files.sh    # 사용자 환경변수(.env) 생성 및 래핑
+    │   ├── install_pack.sh          # pack CLI 설치
+    │   ├── resolve_env.sh           # 빌드 환경 변수 검증 및 설정
+    │   ├── s3_sync_and_validate.sh  # S3 소스 다운로드 및 검증
+    │   ├── patch_package_json.sh    # package.json 의존성/스크립트 주입
+    │   └── process_env_files.sh     # 사용자 환경변수(.env) 생성 및 래핑
     ├── 02_build/
-    │   └── build_image.sh          # pack build 실행 및 ECR 푸시
+    │   └── build_image.sh           # pack build 실행 및 ECR 푸시
     ├── 03_postbuild/
-    │   └── publish_sqs_message.sh  # SQS로 성공 메시지 전송
+    │   └── publish_sqs_message.sh   # SQS 성공 메시지 전송
     ├── lib/
-    │   ├── create_env_file.py      # .env 파일 생성
-    │   ├── create_env_wrapper.py   # dotenv 로드를 위한 엔트리포인트 래퍼 생성
-    │   ├── parse_custom_env.py     # CLI/Shell용 환경변수 문자열 파싱
-    │   └── patch_package_json.py   # FaaS 의존성 추가 및 start 스크립트 주입
-    └── common.sh                   # 공통 함수 (에러 핸들링, 환경변수 로드)
+    │   ├── create_env_file.py       # .env 파일 생성
+    │   ├── create_env_wrapper.py    # dotenv 로드를 위한 엔트리포인트 래퍼 생성
+    │   ├── parse_custom_env.py      # CUSTOM_ENV 파싱 유틸
+    │   └── patch_package_json.py    # 의존성 추가 및 start 스크립트 주입
+    └── common.sh                    # 공통 함수 (에러 핸들링, 환경변수 로드)
 ```
 
 <br>
 
 ---
 
-## ⚙️ 빌드 프로세스
-`buildspec.yml`에 정의된 4단계의 라이프사이클을 통해 빌드가 진행됩니다.
+<br>
 
-### 1. Install Phase
-- `install_pack.sh`: Cloud Native Buildpacks를 사용하기 위한 핵심 도구인 pack CLI를 설치합니다.
-- 캐싱(Caching): 빌드 속도 최적화를 위해 pack 바이너리와 Docker 레이어를 로컬 캐시에 저장하여 재사용합니다.
+## 빌드 파이프라인
+`buildspec.yml`은 4단계 라이프사이클로 구성되어 있습니다.
 
-### 2. Pre_build Phase
-본격적인 빌드 전, 코드를 준비하고 환경을 구성합니다.
-- `resolve_env.sh`: 필수 환경 변수가 올바르게 설정되었는지 확인하고 로드합니다.
-- `s3_sync_and_validate.sh`: 사용자의 소스 코드를 S3에서 다운로드하고 파일 무결성을 검증합니다.
-- `patch_package_json.sh`: `lib/patch_package_json.py`를 호출하여 FaaS 구동에 필요한 의존성(@google-cloud/functions-framework)과 실행 스크립트를 주입합니다.
-- `process_env_files.sh`: `lib/create_env_file.py` 등을 호출하여 사용자가 설정한 환경 변수(CUSTOM_ENV)를 .env 파일로 변환하고, 이를 런타임에 로드할 수 있도록 엔트리포인트를 래핑합니다.
+#### 1. Install
+빌드에 필요한 공통 도구를 준비합니다.
+- **install_pack.sh**
+    - Cloud Native Buildpacks 사용을 위한 pack CLI 설치
+- **캐시 활용**
+    - `pack` 바이너리
+    - Docker layer
+    - 관련 볼륨 데이터 재사용
 
-### 3. Build Phase
-- `build_image.sh`: 준비된 소스 코드를 pack build 명령어를 통해 OCI 호환 컨테이너 이미지로 빌드합니다. 빌드가 완료되면 이미지를 Amazon ECR로 푸시합니다.
+이 단계는 빌드 속도와 재실행 효율을 높이기 위한 기반입니다.
 
-### 4. Post_build Phase
-- `publish_sqs_message.sh`: 빌드 및 푸시가 성공하면, 배포 완료 트리거를 위해 이미지 다이제스트 등의 정보를 담은 메시지를 SQS로 전송합니다.
-- 실패 알림: `common.sh`에 정의된 `notify_deploy_failed` 함수를 통해 단계별 오류 발생 시 즉시 실패 상태를 전파합니다.
+<br>
+
+#### 2. Pre_build Phase
+실제 빌드 전에, 사용자 코드를 플랫폼이 처리 가능한 형태로 정리합니다.
+- **resolve_env.sh**
+    - 필수 환경 변수 존재 여부 확인
+    - 빌드에 필요한 값 로드 및 검증
+- **s3_sync_and_validate.sh**
+    - S3에서 사용자 소스 다운로드
+    - 필요한 파일 존재 여부 및 무결성 확인
+- **patch_package_json.sh**
+    - `lib/patch_package_json.py` 호출
+    - 함수 실행에 필요한 의존성과 start 스크립트 자동 주입
+- **process_env_files.sh**
+    - CUSTOM_ENV를 .env 파일로 변환
+    - 런타임에서 이를 로드할 수 있도록 엔트리포인트 래핑
+이 단계의 핵심은 사용자 코드의 편차를 사전에 흡수해 빌드 실패 가능성을 줄이는 것입니다.
+
+<br>
+
+#### 3. Build Phase
+
+준비된 소스를 실제 컨테이너 이미지로 변환합니다.
+- **build_image.sh**
+    - `pack build` 실행
+    - OCI 호환 이미지 생성
+    - Amazon ECR 푸시
+Cloud Native Buildpacks를 사용함으로써,
+Dockerfile 없이도 일관된 방식으로 빌드 가능한 표준 컨테이너 경로를 제공합니다.
+
+#### 4. Post_build Phase
+준비된 소스를 실제 컨테이너 이미지로 변환합니다.
+- **build_image.sh**
+    - `pack build` 실행
+    - OCI 호환 이미지 생성
+    - Amazon ECR 푸시
+Cloud Native Buildpacks를 사용함으로써,
+Dockerfile 없이도 일관된 방식으로 빌드 가능한 표준 컨테이너 경로를 제공합니다.
+
 <br>
 
 ---
 
-## 🐍 Python 유틸리티 스크립트 (`scripts/lib/`)
-복잡한 파일 조작 로직은 파이썬 스크립트로 분리하여 관리합니다.
-- `scripts/lib/patch_package_json.py`: `package.json` 파일에 `@google-cloud/functions-framework` 와 `dotenv` 의존성을 추가하고, `start` 스크립트를 설정하여 Cloud Functions Framework를 통해 함수를 실행할 수 있도록 보장합니다.
-- `scripts/lib/create_env_file.py`: `CUSTOM_ENV` 환경 변수로부터 `.env` 파일을 생성합니다.
-- `scripts/lib/create_env_wrapper.py`: `dotenv`를 사용하여 `.env` 파일을 로드하는 `index.js` 래퍼를 생성합니다.
-- `scripts/lib/parse_custom_env.py`: (현재 `buildspec.yml`에서 사용되지 않음) `CUSTOM_ENV` 변수를 파싱하여 `pack build` 명령어에 `--env` 플래그로 전달하는 대안적인 방법을 제공합니다.
+<br>
+
+
+## Python 유틸리티 스크립트 (`scripts/lib/`)
+
+복잡한 파일 조작과 문자열 처리는 Python으로 분리해
+쉘 스크립트의 역할을 단순화했습니다.
+
+- **patch_package_json.py** <br>
+    `package.json`에 필요한 의존성(`@google-cloud/functions-framework`, `dotenv`)과 실행 스크립트를 주입해 함수 실행 환경을 자동 보정합니다.
+- **create_env_file.py** <br>
+    CUSTOM_ENV 값을 .env 파일로 변환합니다.
+- **create_env_wrapper.py** <br>
+    `.env`를 로드한 뒤 기존 엔트리포인트를 실행할 수 있도록 래퍼 파일을 생성합니다.
+- **parse_custom_env.py** <br>
+    `CUSTOM_ENV`를 파싱해 `pack build --env` 방식으로 전달할 수 있도록 만든 대안 유틸입니다.
+    현재 기본 빌드 경로에서는 사용하지 않습니다.
+
 <br>
 
 ---
 
-## ⚡ 캐시 설정
-빌드 성능 향상을 위해 `buildspec.yml`에 다음과 같은 로컬 캐시가 적용되어 있습니다.
-- Source Cache: git 소스 및 다운로드된 파일 캐싱
-- Docker Layer Cache: 이전에 빌드된 도커 레이어 재사용
-- Custom Cache: pack CLI 및 관련 볼륨 데이터 캐싱 (`/usr/local/bin/pack`, `/var/lib/docker/volumes`)
-
-</details>
-
-<details>
-<summary>🇯🇵 日本語</summary>
-
-## 📜 概要
-
-このリポジトリは、cutty-x FaaS プラットフォームの ビルドエンジンとして動作する AWS CodeBuild 構成 を提供します。
 <br>
-ユーザーが作成したコードを S3 から取得し、Cloud Native Buildpacks を使用してコンテナイメージへ変換し、ECR にプッシュした後、その結果（成功 / 失敗）をシステム全体に伝達するためのビルドパイプラインを定義しています。
+
+
+## 캐시 설정
+빌드 시간을 줄이고 반복 실행 효율을 높이기 위해 로컬 캐시를 적용했습니다.
+- **Source Cache** <br> git 소스 및 다운로드 파일 캐싱
+- **Docker Layer Cache** <br> 이전 빌드 레이어 재사용
+- **Custom Cache** <br> pack CLI 및 관련 데이터 캐싱
+    - `/usr/local/bin/pack`
+    - `/var/lib/docker/volumes`
+
 <br>
-また、保守性と拡張性を高めるために、ビルド処理をフェーズごとにモジュール化しています。
 
-## 📂 ディレクトリ構造
-ビルドスクリプトは、フェーズと目的に応じて整理されています。
-```
-.
-├── buildspec.yml                   # AWS CodeBuild ビルド仕様
-└── scripts
-    ├── 01_prebuild/
-    │   ├── install_pack.sh         # pack CLI のインストール
-    │   ├── resolve_env.sh          # 必須環境変数の検証およびロード
-    │   ├── s3_sync_and_validate.sh # S3 ソースコードのダウンロードと検証
-    │   ├── patch_package_json.sh   # package.json の依存関係/スクリプト注入
-    │   └── process_env_files.sh    # 環境変数(.env) の生成およびラッピング
-    ├── 02_build/
-    │   └── build_image.sh          # pack build と ECR プッシュ
-    ├── 03_postbuild/
-    │   └── publish_sqs_message.sh  # SQS への成功メッセージ送信
-    ├── lib/
-    │   ├── create_env_file.py      # .env ファイル生成
-    │   ├── create_env_wrapper.py   # dotenv ローダーのエントリーポイント生成
-    │   ├── parse_custom_env.py     # 環境変数文字列の解析
-    │   └── patch_package_json.py   # FaaS 依存関係と start スクリプトを注入
-    └── common.sh                   # 共通関数（エラーハンドリングなど）
-```
+---
 
-
-## ⚙️ ビルドプロセス
-`buildspec.yml`で定義された 4 つのフェーズに従ってビルドが実行されます。
-### 1. Install Phase
-- `install_pack.sh`: Cloud Native Buildpacks を使用するための pack CLI をインストール
-- キャッシュ最適化：pack バイナリと Docker レイヤーをローカルキャッシュとして保持し、ビルド速度を向上
-
-### 2. Pre_build Phase
-本番ビルドの前にコードと環境を準備します。
-- `resolve_env.sh`: 必須環境変数が設定されているかを検証し、ロード
-- `s3_sync_and_validate.sh`: S3 からユーザーのソースコードを取得し、ファイル内容を検証
-- `patch_package_json.sh`: `lib/patch_package_json.py` を呼び出し、Cloud Functions Framework 用の依存関係と start スクリプトを挿入
-- `process_env_files.sh`: `lib/create_env_file.py` を使用して CUSTOM_ENV から .env を生成し、ランタイムでロードされるようエントリーポイントをラップ
-
-### 3. Build Phase
-- `build_image.sh`: pack build により OCI 準拠のコンテナイメージを生成し、Amazon ECR にプッシュします。
-
-### 4. Post_build Phase
-- `publish_sqs_message.sh`：ビルド成功後、イメージダイジェスト等を含むメッセージを SQS に送信し次のデプロイフェーズをトリガー
-- 失敗通知：各フェーズでエラーが発生した場合、`common.sh` の `notify_deploy_failed` により即時失敗を通知
-
-## 🐍 Python ユーティリティスクリプト（`scripts/lib/`）
-複雑なファイル操作ロジックは Python スクリプトに分離されています。
-- `patch_package_json.py`：`@google-cloud/functions-framework` と `dotenv` を依存関係に追加し、FaaS 実行用の start スクリプトを挿入
-- `create_env_file.py`：CUSTOM_ENV から .env を生成
-- `create_env_wrapper.py`：dotenv をロードするエントリーポイントファイルを生成し、ユーザーコードを安全にラップ
-- `parse_custom_env.py`：pack build に渡すために環境変数を解析する代替手法（現在未使用）
-
-## ⚡ キャッシュ設定
-ビルド性能向上のために以下のローカルキャッシュを利用します。
-- Source Cache：ソースおよびダウンロード済みファイルをキャッシュ
-- Docker Layer Cache：過去の Docker レイヤーを再利用
-- Custom Cache：pack CLI と Docker ボリュームキャッシュ(`/usr/local/bin/pack`, `/var/lib/docker/volumes`)
-
-</details>
-
-<details>
-<summary>🇬🇧 English</summary>
-
-## 📜 Overview
-
-This repository provides the **AWS CodeBuild build engine** used in the cutty-x FaaS platform.
 <br>
-It defines the full build pipeline responsible for fetching user-submitted code from S3, converting it into a container image using Cloud Native Buildpacks, pushing the image to ECR, and propagating the build result (success or failure) to the rest of the system.
-<br>
-To maximize maintainability and extensibility, each build step is modularized into separate scripts.
 
-## 📂 Directory Structure
-```
-.
-├── buildspec.yml                   # AWS CodeBuild build specification
-└── scripts
-    ├── 01_prebuild/
-    │   ├── install_pack.sh         # Install pack CLI
-    │   ├── resolve_env.sh          # Validate and load required build env variables
-    │   ├── s3_sync_and_validate.sh # Download and verify user code from S3
-    │   ├── patch_package_json.sh   # Inject dependencies/scripts into package.json
-    │   └── process_env_files.sh    # Generate and wrap .env files for runtime use
-    ├── 02_build/
-    │   └── build_image.sh          # Run pack build and push to ECR
-    ├── 03_postbuild/
-    │   └── publish_sqs_message.sh  # Send success message to SQS
-    ├── lib/
-    │   ├── create_env_file.py      # Generate .env file
-    │   ├── create_env_wrapper.py   # Create entrypoint wrapper that loads dotenv
-    │   ├── parse_custom_env.py     # Parse env strings for CLI use
-    │   └── patch_package_json.py   # Inject FaaS dependencies and start scripts
-    └── common.sh                   # Shared utilities (error handling, env loading)
-```
+## 기대 효과
 
-## ⚙️ Build Process
-The build proceeds through four lifecycle phases defined in buildspec.yml.
-### 1. Install Phase
-- `install_pack.sh`: Installs the pack CLI required for Cloud Native Buildpacks.
-- Caching: Stores the pack binary and Docker layers locally to accelerate subsequent builds.
+이 저장소를 통해 빌드 파이프라인은 다음과 같은 특성을 갖습니다.
+- 사용자 코드 차이를 흡수하는 **표준 빌드 구조**
+- 단계별 책임 분리로 인한 **유지보수 용이성**
+- 실패 지점 식별이 쉬운 **운영 친화적 구조**
+- 빌드 결과를 후속 시스템과 연결하는 **확장 가능한 파이프라인**
 
-### 2. Pre_build Phase
-Prepares the environment and user code before building.
-- `resolve_env.sh`: Validates required environment variables and loads them
-- `s3_sync_and_validate.sh`: Downloads user code from S3 and validates file integrity
-- `patch_package_json.sh`: Uses `lib/patch_package_json.py` to inject required dependencies and the start script for the Cloud Functions Framework
-- `process_env_files.sh`: Generates a .env file from CUSTOM_ENV and wraps the user entrypoint so the variables load at runtime
-
-### 3. Build Phase
-- `build_image.sh`: Builds an OCI-compliant container image using pack build and pushes the image to Amazon ECR.
-
-### 4. Post_build Phase
-- `publish_sqs_message.sh`: Sends an SQS message containing image metadata (e.g., digest) to trigger the deployment workflow.
-- Failure handling: Any failure during the pipeline immediately triggers notify_deploy_failed defined in common.sh.
-
-## 🐍 Python Utility Scripts (`scripts/lib/`)
-Complex file manipulation is delegated to Python utilities.
-- `patch_package_json.py`: Adds `@google-cloud/functions-framework` and `dotenv` dependencies and injects the required start script
-- `create_env_file.py`: Generates a .env file from the CUSTOM_ENV variable
-- `create_env_wrapper.py`: Generates a wrapper entrypoint that loads .env using dotenv
-- `parse_custom_env.py`: Alternative (currently unused) method for passing env vars to pack build
-
-## ⚡ Cache Configuration
-To improve build performance, the following CodeBuild local caches are used:
-- Source Cache: Caches source files and downloaded artifacts
-- Docker Layer Cache: Reuses previously created Docker layers
-- Custom Cache: Stores the pack CLI binary and Docker volume data (`/usr/local/bin/pack`, `/var/lib/docker/volumes`)
+즉, 이 리포지토리는 단순한 CodeBuild 설정이 아니라, <br>
+FaaS 플랫폼에서 다양한 함수 코드를 **일관되게 빌드·배포 가능한 형태로 연결하는 빌드 오케스트레이션 레이어**입니다.
